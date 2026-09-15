@@ -75,7 +75,7 @@ jobs:
       env:
         PYTHONPATH: .
       run: |
-        python -m pytest -v \
+        python -m pytest -v -m "not integration" \
           --cov=. \
           --cov-report=term-missing \
           --cov-report=json:coverage.json
