@@ -19,25 +19,29 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
     - name: Set up Python 3.10
       uses: actions/setup-python@v3
       with:
         python-version: "3.10"
+
     - name: Install dependencies
+      working-directory: ./3_1_LLM_agent
       run: |
         python -m pip install --upgrade pip
-        pip install flake8 pytest
+        pip install pytest pytest-cov flake8
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-     #- name: Lint with flake8
-     # run: |
-        # stop the build if there are Python syntax errors or undefined names
-     #   flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
-     #   flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-     #- name: Setup and Run Ollama
-     # uses: imitrichev/ollama-action@v3
-     # with:
-     #   model: 'qwen3.5:0.8b'
+
+    #- name: Lint with flake8
+    #  run: |
+    #    flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+    #    flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    #- name: Setup and Run Ollama
+    #  uses: imitrichev/ollama-action@v3
+    #  with:
+    #    model: 'qwen3.5:0.8b'
+
     - name: Download and extract Ollama manually
       run: |
         # Приводим архитектуру к формату amd64 / arm64
@@ -49,7 +53,7 @@ jobs:
         tar -C .ollama-install --zstd -xf ollama.tar.zst
         rm ollama.tar.zst
         
-        # Опционально: добавляем бинарник в PATH, чтобы команда `ollama` была доступна
+        # Добавляем Ollama в PATH
         echo "$(pwd)/.ollama-install/bin" >> $GITHUB_PATH
 
     - name: Start Ollama Service and Pull Model
@@ -57,20 +61,85 @@ jobs:
         export OLLAMA_NUM_PARALLEL=1
         export OLLAMA_MAX_LOADED_MODELS=1
         
-        # Запускаем Ollama в фоновом режиме и перенаправляем логи
+        # Запускаем Ollama в фоновом режиме
         ollama serve > ollama.log 2>&1 &
     
-        # Ждем пару секунд, пока сервер инициализируется
+        # Ждем инициализации сервера
         sleep 5
     
-        # Скачиваем модель, указанную в коде теста
+        # Скачиваем модель
         ollama pull qwen3.5:0.8b
-        
+
     - name: Test with pytest
       working-directory: ./3_1_LLM_agent
       env:
         PYTHONPATH: .
       run: |
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        python -m pytest -v
+        python -m pytest -v -m "not integration" \
+          --cov=. \
+          --cov-report=term-missing \
+          --cov-report=json:coverage.json
+
         python main.py
+
+    - name: Update coverage Gist
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      working-directory: ./3_1_LLM_agent
+      env:
+        GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        GIST_ID: ${{ secrets.GIST_ID }}
+      run: |
+        python - <<'PY'
+        import json
+        import os
+        import urllib.request
+
+        with open("coverage.json") as f:
+            coverage = json.load(f)
+
+        percent = coverage["totals"]["percent_covered"]
+
+        if percent >= 80:
+            color = "brightgreen"
+        elif percent >= 60:
+            color = "yellow"
+        else:
+            color = "red"
+
+        badge = {
+            "schemaVersion": 1,
+            "label": "coverage",
+            "message": f"{percent:.1f}%",
+            "color": color
+        }
+
+        token = os.environ["GIST_TOKEN"]
+        gist_id = os.environ["GIST_ID"]
+
+        data = json.dumps({
+            "files": {
+                "coverage.json": {
+                    "content": json.dumps(badge)
+                }
+            }
+        }).encode()
+
+        request = urllib.request.Request(
+            f"https://api.github.com/gists/{gist_id}",
+            data=data,
+            method="PATCH",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Content-Type": "application/json",
+                "User-Agent": "github-actions"
+            }
+        )
+
+        with urllib.request.urlopen(request) as response:
+            print(response.read().decode())
+
+        print(f"Coverage: {percent:.1f}%")
+        print(f"Badge color: {color}")
+        PY
